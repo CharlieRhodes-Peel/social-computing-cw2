@@ -105,6 +105,7 @@ def first_pass(filepath):
     print("First pass: collecting IDs and computing global mean...")
     user_ids = set()
     item_ids = set()
+    row_count = set()
     total_rating = 0.0
     n = 0
 
@@ -116,11 +117,12 @@ def first_pass(filepath):
             user_ids.add(int(row[0]))
             item_ids.add(int(row[1]))
             total_rating += float(row[2])
+            row_count.add(n)
             n += 1
 
     global_mean = total_rating / n
     print(f"  Users: {len(user_ids):,}  |  Items: {len(item_ids):,}  |  Ratings: {n:,}  |  μ={global_mean:.4f}")
-    return user_ids, item_ids, global_mean
+    return user_ids, item_ids, global_mean, row_count
 
 
 # ─────────────────────────────────────────────
@@ -145,39 +147,26 @@ def build_mappings(user_ids, item_ids):
 # Step 2b: Split users into train / validation sets
 # ─────────────────────────────────────────────
 
-def split_users(user_ids, val_fraction=0.2, seed=42):
+def split_rows(row_count, val_fraction=0.2, seed=42):
     """
-    Randomly assign users to train or validation groups.
-
-    We split by USER, not by row. This means:
-      - Train users: all their ratings go into SGD training
-      - Val users:   their ratings are withheld from training and used
-                     only to compute MAE after training
-
-    Why user-based splitting?
-      A row-level random split (e.g. 80% of rows train, 20% val) would
-      allow the same user to appear in both sets. The model would learn
-      factor vectors for that user during training, so validation would
-      measure interpolation rather than generalisation. By holding out
-      entire users we measure true cold-start generalisation, which is
-      the harder and more realistic scenario.
+    Randomly assign rows to train or validation groups.
 
     Returns:
-        train_users (set), val_users (set)
+        train_rows (set), val_rows (set)
     """
     rng = random.Random(seed)
-    user_list = sorted(user_ids)          # sort for reproducibility
-    rng.shuffle(user_list)
+    row_list = sorted(row_count)
+    rng.shuffle(row_list)
 
-    split_idx   = int(len(user_list) * (1 - val_fraction))
-    train_users = set(user_list[:split_idx])
-    val_users   = set(user_list[split_idx:])
+    split_idx   = int(len(row_list) * (1 - val_fraction))
+    train_rows = set(row_list[:split_idx])
+    val_rows   = set(row_list[split_idx:])
 
-    print(f"  Train users: {len(train_users):,}  |  Val users: {len(val_users):,}  ({val_fraction*100:.0f}% held out)")
-    return train_users, val_users
+    print(f"  Train rows: {len(train_rows):,}  |  Val rows: {len(val_rows):,}  ({val_fraction*100:.0f}% held out)")
+    return train_rows, val_rows
 
 
-def partition_ratings(filepath, train_users, val_users):
+def partition_ratings(filepath, train_rows, val_rows):
     """
     Read the training file once and split rows into:
       - train_ratings: list of (user_raw, item_raw, rating) for train users
@@ -196,16 +185,20 @@ def partition_ratings(filepath, train_users, val_users):
 
     with open(filepath, "r") as f:
         reader = csv.reader(f)
+        count = 0
         for row in reader:
             if not row:
                 continue
+
             u = int(row[0])
             i = int(row[1])
             r = float(row[2])
-            if u in train_users:
+            if count in train_rows:
                 train_ratings.append((u, i, r))
-            elif u in val_users:
+            elif count in val_rows:
                 val_ratings.append((u, i, r))
+
+            count = count + 1
 
     print(f"  Train ratings: {len(train_ratings):,}  |  Val ratings: {len(val_ratings):,}")
     return train_ratings, val_ratings
@@ -549,7 +542,7 @@ def main():
     print()
 
     # ── 1. First pass: discover all IDs and global mean
-    user_ids, item_ids, global_mean = first_pass(TRAIN_FILE)
+    user_ids, item_ids, global_mean, row_count = first_pass(TRAIN_FILE)
 
     # ── 2. Build compact index mappings
     user_map, item_map = build_mappings(user_ids, item_ids)
@@ -565,11 +558,11 @@ def main():
     if VALIDATION_MODE:
         # ── VALIDATION PATH ──────────────────────────────────────────────────
         # Split users 80/20 and partition all ratings accordingly
-        train_users, val_users = split_users(user_ids, val_fraction=VALIDATION_SPLIT)
-        train_ratings, val_ratings = partition_ratings(TRAIN_FILE, train_users, val_users)
+        train_rows, val_rows = split_rows(row_count, val_fraction=VALIDATION_SPLIT)
+        train_ratings, val_ratings = partition_ratings(TRAIN_FILE, train_rows, val_rows)
 
-        # Train only on the 80% train users
-        print("\nTraining on 80% of users...")
+        # Train only on the 80% train rows
+        print("\nTraining on 80% of rows...")
         train_from_list(train_ratings, user_map, item_map, global_mean, P, Q, bu, bi)
 
         # Evaluate MAE on the held-out 20% val users
