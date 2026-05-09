@@ -50,7 +50,7 @@ import numpy as np
 N_FACTORS   = 50      # Number of latent dimensions. More = expressive but slower + overfits.
                       # 50-200 is typical. Start at 50, increase if MAE is still high.
 
-N_EPOCHS    = 10      # Training passes over the full dataset.
+N_EPOCHS    = 20      # Training passes over the full dataset.
                       # Each extra epoch improves fit but risks overfitting.
 
 LEARNING_RATE = 0.005 # Step size for gradient descent (η).
