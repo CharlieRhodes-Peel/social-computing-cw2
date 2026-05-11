@@ -1,0 +1,196 @@
+# ---- Imports ----
+import csv
+import math
+import time
+import random
+import numpy as np
+# -----------------
+
+def trainingStart(fileName):
+    """
+    Starts the training by getting all the users and items into a set, also calcs
+    global mean while we're here
+
+    Returns:
+        userIDs (set), itemIDs (set), globalMean (float), count (int)
+    """
+
+    print("first pass...")
+
+    # Groups items and users into sets
+    userIDs = set()
+    itemIDs = set()
+    runningRatingTotal = 0
+
+    count = 0
+
+    #Read file and put users and items into those sets
+    with open (fileName, "r") as file:
+        reader = csv.reader(file)
+        for row in reader:
+
+            # Just to make sure!
+            if not row:
+                continue
+
+            # Put into respective sets
+            userIDs.add(int(row[0]))
+            itemIDs.add(int(row[1]))
+            runningRatingTotal += float(row[2])
+
+            count += 1
+
+    #Also calculates a global mean
+    globalMean = runningRatingTotal / count
+
+    print(f"Global Mean calculated: {globalMean}")
+    return userIDs, itemIDs, globalMean, count
+
+def itemMappings (itemIDs):
+    """
+    Creates a dictionary that stores every itemID because I think that the int value of some itemIDs exceeds that of len(itemIDs)
+    """
+
+    # Makes it a list aswell
+    itemsSorted = sorted(itemIDs)
+
+    itemMap = {}
+    for i in range(len(itemsSorted)):
+        itemMap[itemsSorted[i]] = i
+    
+    return itemMap
+
+
+def setupLatentFactorVectors(nUsers, nItems, nFactors):
+    """
+    Sets up the latent factor matrices and bias vectors
+    """
+
+    print("Setting up latent factor space...")
+
+    #Setting up matricies in latent factor space
+    userLatentMatrix = np.random.normal(0.0, 0.1, (nUsers, nFactors))
+    itemLatentMatrix = np.random.normal(0.0, 0.1, (nItems, nFactors))
+
+    #Setting up biases
+    userBiasMatrix = np.zeros(nUsers, dtype=np.float32)
+    itemBiasMatrix = np.zeros(nItems, dtype=np.float32)
+
+    return userLatentMatrix, itemLatentMatrix, userBiasMatrix, itemBiasMatrix
+
+
+def sgd(fileName, nIterations, globalMean, uLatent, iLatent, uBias, iBias, learningRate, learningRateDecay, regularisation, itemMap):
+    """
+    The big function that does SGD, following the pseudocode from the lectures roughly, with slight tweaks
+    """
+    for i in range(nIterations):
+        iStartTime = time.time()
+        print (f"Starting iteration {i}...")
+
+        #Opens the training file
+        with open (fileName, "r") as f:
+            reader = csv.reader(f)
+
+            for row in reader:
+
+                # Just to make sure!
+                if not row:
+                    continue
+                
+                uID = int(row[0])
+                iID = itemMap[int(row[1])]
+                rating = float(row[2])
+
+                # Predict and then calc error
+                pred = globalMean + uBias[uID] + iBias[iID] + np.dot(uLatent[uID], iLatent[iID])
+                error = rating - pred
+
+                #Update the factors
+                prevUserFactors = uLatent[uID]
+
+                uLatent[uID] += learningRate * (error * iLatent[iID] - regularisation * uLatent[uID])
+                iLatent[iID] += learningRate * (error * prevUserFactors - regularisation * iLatent[iID])
+
+                #Update the biases
+                uBias[uID] += learningRate * (error - regularisation * uBias[uID])
+                iBias[iID] += learningRate * (error - regularisation * iBias[iID])
+            
+        # learning rate lowers over time
+        learningRate *= learningRateDecay
+
+        print(f"iteration {i} complete | time took: {time.time() - iStartTime}s")
+    return None
+
+# Do all predicitions and save to a file
+def predictions(testFileName, predictionFileName, globalMean, uLatent, iLatent, uBias, iBias, itemMap):
+    print(f"Generating Predicitions...")
+
+    #Opens both the test and prediction files
+    with open (testFileName, "r") as testFile, open(predictionFileName, "w", newline="") as predictFile:
+        reader = csv.reader(testFile)
+        writer = csv.writer(predictFile)
+
+        for row in reader:
+
+            # Just in case!
+            if not row:
+                continue
+
+            # Have to read items to a raw ID because there are new items outside of itemMapping
+            uID = int(row[0])
+            iRawID = int(row[1])
+            
+            predicition = 0
+
+            # Just adds the user bias to unseen items
+            if iRawID not in itemMap:
+                predicition = globalMean + uBias[uID]
+            else:
+                iID = itemMap[iRawID]
+                predicition = globalMean + uBias[uID] + iBias[iID] + np.dot(uLatent[uID], iLatent[iID])
+            
+            predicition = float(np.clip(predicition, 0.0, 5.0))
+
+            writer.writerow([uID, iRawID, f"{predicition:.4f}"])
+
+    return None
+
+# Predict the rating a user will give to an item
+def predRating(uID, iID, globalMean, iLatent, uLatent, uBias, iBias):
+    
+    predicition = globalMean + uBias[uID] + iBias[iID] + np.dot(uLatent[uID], iLatent[iID])
+
+    return float(np.clip(predicition, 0.5, 5.0))
+
+###### ACTUAL RUNNING STUFF NO MORE FUNCTIONS #########
+
+# Factors to tweak
+TRAINING_FILE = "train_20M_withratings.csv"
+TEST_FILE = "test_20M_withoutratings.csv"
+PREDICTION_FILE = "predictions.csv"
+LATENT_FACTORS = 50
+N_ITERATIONS = 20
+LEARNING_RATE = 0.005
+REGULARISATION = 0.02
+
+# Got the idea for learning rate decay from here: https://www.geeksforgeeks.org/machine-learning/learning-rate-decay/
+LEARNING_RATE_DECAY = 0.96
+
+## Start running
+
+# Do a first pass an calculated global mean and sort stuff into sets
+userIDs, itemIDs, globalMean, rowCount = trainingStart(TRAINING_FILE)
+
+itemMap = itemMappings(itemIDs)
+
+#Setup the latent factors based on the sizes found previous
+uLatent, iLatent, uBias, iBias = setupLatentFactorVectors(len(userIDs) + 1, len(itemMap), LATENT_FACTORS)
+
+#Train
+sgd(TRAINING_FILE, N_ITERATIONS, globalMean, uLatent, iLatent, uBias, iBias, LEARNING_RATE, LEARNING_RATE_DECAY, REGULARISATION, itemMap)
+
+#Predict
+predictions(TEST_FILE, PREDICTION_FILE, globalMean, uLatent, iLatent, uBias, iBias, itemMap)
+
+print("Done!")
+
